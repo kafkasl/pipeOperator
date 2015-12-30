@@ -10,14 +10,7 @@ class OperationParser:
                           ast.Div: op.truediv, ast.Pow: op.pow}
 
     def get_result(self, expression):
-        """
-        >>> self._evalexpr('2^6')
-        4
-        >>> self._evalexpr('2**6')
-        64
-        >>> self._evalexpr('1 + 2*3**(4^5) / (6 + -7)')
-        -5.0
-        """
+
         return self._eval(ast.parse(expression, mode='eval').body)
 
     def _eval(self, node):

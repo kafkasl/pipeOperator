@@ -12,7 +12,7 @@ import sys
 import signal
 
 
-# OS pipes implementation =============================================================
+# OS pipes implementation ===============================================
 
 DEFAULT_CHUNK_SIZE = 20000
 IO_TIME = 0.0
@@ -25,7 +25,8 @@ def read(pipe, end_char='\n'):
         return char
     else:
         while char != end_char:
-            string += char
+            if char != ' ':
+                string += char
             char = os.read(pipe, 1)
         return string
 
@@ -56,47 +57,38 @@ class PipeOperator():
         return self.lock.locked()
 
     def _operate(self, op):
-        # if op:
-        #     print("OP= [%s]" % op)
+
         try:
             result = OperationParser().get_result(op)
-            # print("%s = %s" % (op, result))
         except Exception, e:
-            # print("Fuking exception %s"  % e)
-            result = "Operation [%s] could not be evaluated" % op
-        # print("Arrived")
+            result = "Operation [%s] could not be evaluated -> %s" % (op, e)
         return result
 
     def _send_to_master(self, message):
 
-        # print("SEnding this message = %s" % message)
         try:
             os.write(self.write_pipe, ("%s\n" % message))
             os.write(self.write_pipe, "%s" % self.END_MARK)
+            return True
         except Exception, e:
             print("Communication from thread to master failed for message"
                   "[%s]\n%s" % (message, e))
-            # print("PO--: %s" % e)
-        # self.lock.release()
-            # os.write(self.write_pipe, "Message [%s] could not be sent\n" % message)
-            # os.write(self.write_pipe, "\ns
-
+            pass
+        return False
 
     def start(self):
 
         read_lock, write_lock = self.locks
+        end = False
+
         while not self.terminate:
             ops = []
             read_lock.release()
 
-            # if read_lock.acquire(False):
-            #     write_lock.acquire()
-            end = False
             counter = 0
             while not end and not self.terminate:
                 try:
                     line = read(self.read_pipe)
-                    # print("Line Received %s" % line, file=sys.stderr)
                     if line:
                         if line == self.END_MARK:
                             end = True
@@ -108,17 +100,16 @@ class PipeOperator():
             try:
                 if end:
                     results = map(self._operate, ops)
-                    results = ["%s = %s" % (op, r) for op, r in zip(ops, results)]
+                    results = ["%s=%s" % (op, r) for op, r in zip(ops, results)]
                     results = reduce(lambda x, y: "%s\n%s" % (x, y), results)
-                    # print("RES: {{%s}}" % results)
-                    # print("LOCK %s" % write_lock, file=sys.stderr)
-                    write_lock.release()
-                    self._send_to_master(results)
-            except Exception, e:
-                print("EXCEPTION %s" % e, file=sys.stderr)
-                os._exit(-1)
 
-            # print("2-PO LOCK: %s" % self.lock)
+                    write_lock.release()
+                    if self._send_to_master(results):
+                        end = False
+            except Exception, e:
+                print("Problem while operating and sending"
+                      "results -> %s" % e, file=sys.stderr)
+                os._exit(-1)
 
 
 class PipeOperatorsManager:
@@ -137,16 +128,16 @@ class PipeOperatorsManager:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        print("Closing master resources [%s threads]" % len(self.master_pipes), file=sys.stderr)
+        print("Closing master resources [%s threads]" % len(self.master_pipes),
+              file=sys.stderr)
+
         for pid in self.pids:
             r, w = self.master_pipes[pid]
-            # os.close(r)
-            # os.close(w)
             os.kill(pid, signal.SIGUSR1)
+
         for pid in self.pids:
             os.waitpid(pid, 0)
-            print("Process %s: closed" % pid)
-
+            print("Process %s: closed" % pid, file=sys.stderr)
 
     def _create_threads(self, available_threads):
         pid = 1
@@ -185,15 +176,12 @@ class PipeOperatorsManager:
         end = False
         while not end:
             try:
-                # os.read(read_pipe, 1)
-                # print("POM: READ %s" % thread_id)
                 global IO_TIME
                 t = time()
                 line = read(read_pipe)
                 t2 = time()
                 IO_TIME += (t2-t)
-                # print("RECline %s" % line)
-                # print("%s %s" % (line == 'E', line == 'E\n'))
+
                 if line:
                     if line == self.END_MARK:
                         end = True
@@ -205,34 +193,32 @@ class PipeOperatorsManager:
                 print("Couldn't read line\n%s" % e, file=sys.stderr)
 
     def _send_chunk_to_thread(self, thread_id):
-        # print("Sending chunk to %s" % thread_id, file=sys.stderr)
-        _, w_param = self.master_pipes[thread_id]
 
-        counter = 0
+        _, w_param = self.master_pipes[thread_id]
         message = ""
 
         if len(self.data) > 0:
             message = "%s\n" % ('\n'.join(self.data[0:self.chunks_size]))
+
             self.sent_op += min(self.chunks_size, len(data))
             del self.data[0:self.chunks_size]
 
             pending_write = True
 
-            # print("MESSAGE to send: [%s]" % message)
             while pending_write:
                 try:
-                    # t.sleep(10)
                     global IO_TIME
                     t = time()
+
                     os.write(w_param, "%s" % message)
                     os.write(w_param, "%s" % self.END_MARK)
+
                     t2 = time()
-                    IO_TIME += (t2-t1)
+                    IO_TIME += (t2-t)
                     pending_write = False
                 except Exception, e:
                     print("TIMEOUT: Problem sending chunk %s" % e, file=sys.stderr)
                     pass
-        # print("done")
 
     def solve(self, data, available_threads, chunks_size):
 
@@ -256,22 +242,12 @@ class PipeOperatorsManager:
                     self.pending_results[pid] = True
                     pending_data = self.sent_op < self.total_op
 
-                    # self.pending_results[pid] = True
-                    # if not self.pending_results[pid] and pending_data:
-
             for pid in self.pids:
                 l1, l2 = self.locks[pid]
 
                 if l2.acquire(False):
                     self._receive_and_print_result(pid)
                     self.pending_results[pid] = False
-                # print("l2 %s" % l2, file=sys.stderr)
-
-
-
-
-                #     self.pending_results[pid] = False
-                # if self.pending_results[pid] and self.locks[pid].acquire(False):
 
 
 if __name__ == '__main__':
@@ -280,7 +256,7 @@ if __name__ == '__main__':
     print("Using python OS's pipes to perform operations in a different "
           "thread.\n", file=sys.stderr)
 
-    available_threads = multiprocessing.cpu_count()
+    available_threads = (multiprocessing.cpu_count() - 1)
     chunks_size = DEFAULT_CHUNK_SIZE
     data = []
 
@@ -303,5 +279,4 @@ if __name__ == '__main__':
 
     t2 = time()
     print("Time: %s" % (t2 - t1), file=sys.stderr)
-    # global IO_TIME
-    print("IO Time: %s" % IO_TIME)
+    print("IO Time: %s" % IO_TIME, file=sys.stderr)
